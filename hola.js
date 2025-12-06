@@ -64,7 +64,6 @@ async function obtenerDatosDesdeArchivo(rl) {
             }
 
             console.log(`Se cargaron ${actividades.length} actividades desde '${filename}'.`);
-            rl.close();
             return actividades;
 
         } catch (e) {
