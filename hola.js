@@ -13,6 +13,7 @@ class Actividad {
         this.tiempo_espera = 0;
         this.indice_servicio = 0;
         this.duracion_restante = duracion; // Para Round Robin
+        this.terminado = false; // Estado de finalización
     }
 
     calcularMetricas() {
@@ -23,12 +24,7 @@ class Actividad {
 }
 
 // --- Función para leer datos desde archivo ---
-async function obtenerDatosDesdeArchivo() {
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-
+async function obtenerDatosDesdeArchivo(rl) {
     function pregunta(query) {
         return new Promise(resolve => rl.question(query, resolve));
     }
@@ -91,7 +87,7 @@ function imprimirResultados(actividades, nombreAlgoritmo) {
     console.log("-".repeat(50));
 
     actividades.sort((a, b) => a.nombre.localeCompare(b.nombre)).forEach(act => {
-        console.log(`${act.nombre.padEnd(9)} | ${act.tiempo_llegada.toString().padEnd(3)} | ${act.duracion.toString().padEnd(3)} | ${act.tiempo_final.toString().padEnd(3)} | ${act.tiempo_retorno.toString().padEnd(3)} | ${act.tiempo_espera.toString().padEnd(3)} | ${act.indice_servicio.toFixed(2)}`);
+        console.log(`${act.nombre.padEnd(9)} | ${act.tiempo_llegada.toString().padEnd(3)} | ${act.duracion.toString().padEnd(3)} | ${act.tiempo_final.toString().padEnd(3)} | ${act.tiempo_retorno.toString().padEnd(3)} | ${act.tiempo_espera.toString().padEnd(3)} | ${act.indice_servicio.toFixed(4)}`);
         total_T += act.tiempo_retorno;
         total_E += act.tiempo_espera;
         total_I += act.indice_servicio;
@@ -112,86 +108,122 @@ function imprimirResultados(actividades, nombreAlgoritmo) {
 
 // --- Algoritmos de planificación ---
 function simulacionFIFO(actividadesOriginales) {
-    const actividades = actividadesOriginales
-        .map(a => new Actividad(a.nombre, a.tiempo_llegada, a.duracion))
-        .sort((a, b) => a.tiempo_llegada - b.tiempo_llegada);
-
+    // Clonamos las actividades preservando el orden original (A, B, C...)
+    const actividades = actividadesOriginales.map(a => new Actividad(a.nombre, a.tiempo_llegada, a.duracion));
+    
     let tiempoActual = 0;
-    for (const act of actividades) {
-        if (tiempoActual < act.tiempo_llegada) tiempoActual = act.tiempo_llegada;
-        act.tiempo_final = tiempoActual + act.duracion;
-        act.calcularMetricas();
-        tiempoActual = act.tiempo_final;
+    let completados = 0;
+
+    // Bucle principal hasta terminar todos
+    while (completados < actividades.length) {
+        let ejecutoAlgo = false;
+
+        // Escaneo estricto desde el inicio de la lista (A -> L)
+        // Ejecuta el PRIMERO que encuentre que ya llegó y no ha terminado
+        for (let i = 0; i < actividades.length; i++) {
+            let act = actividades[i];
+            
+            if (!act.terminado && act.tiempo_llegada <= tiempoActual) {
+                tiempoActual += act.duracion;
+                act.tiempo_final = tiempoActual;
+                act.calcularMetricas();
+                act.terminado = true;
+                
+                completados++;
+                ejecutoAlgo = true;
+                break; // Reiniciamos la búsqueda desde A
+            }
+        }
+
+        // Si nadie podía ejecutarse (CPU ociosa), avanzamos el reloj
+        if (!ejecutoAlgo) {
+            tiempoActual++;
+        }
     }
 
     return imprimirResultados(actividades, "FIFO");
 }
 
 function simulacionLIFO(actividadesOriginales) {
-    const pendientes = actividadesOriginales.map(a => new Actividad(a.nombre, a.tiempo_llegada, a.duracion));
-    const terminadas = [];
+    const actividades = actividadesOriginales.map(a => new Actividad(a.nombre, a.tiempo_llegada, a.duracion));
+    
     let tiempoActual = 0;
+    let completados = 0;
 
-    while (pendientes.length) {
-        const listas = pendientes.filter(a => a.tiempo_llegada <= tiempoActual);
-        if (!listas.length) {
-            tiempoActual = Math.min(...pendientes.map(a => a.tiempo_llegada));
-            continue;
+    while (completados < actividades.length) {
+        let ejecutoAlgo = false;
+
+        // Escaneo estricto INVERSO (desde el final hacia el principio, L -> A)
+        // Prioriza a los que están abajo en la lista
+        for (let i = actividades.length - 1; i >= 0; i--) {
+            let act = actividades[i];
+            
+            if (!act.terminado && act.tiempo_llegada <= tiempoActual) {
+                tiempoActual += act.duracion;
+                act.tiempo_final = tiempoActual;
+                act.calcularMetricas();
+                act.terminado = true;
+                
+                completados++;
+                ejecutoAlgo = true;
+                break; // Reiniciamos la búsqueda
+            }
         }
 
-        const act = listas.reduce((prev, curr) => (curr.tiempo_llegada > prev.tiempo_llegada ? curr : prev));
-        act.tiempo_final = tiempoActual + act.duracion;
-        act.calcularMetricas();
-        tiempoActual = act.tiempo_final;
-
-        terminadas.push(act);
-        pendientes.splice(pendientes.indexOf(act), 1);
+        if (!ejecutoAlgo) {
+            tiempoActual++;
+        }
     }
 
-    return imprimirResultados(terminadas, "LIFO");
+    return imprimirResultados(actividades, "LIFO");
 }
 
 function simulacionRoundRobin(actividadesOriginales, quantum) {
     const actividades = actividadesOriginales.map(a => new Actividad(a.nombre, a.tiempo_llegada, a.duracion));
-    const pendientes = actividades.sort((a, b) => a.tiempo_llegada - b.tiempo_llegada);
-    const cola = [];
-    const terminadas = [];
+    
     let tiempoActual = 0;
-    let idxPendientes = 0;
+    let completados = 0;
+    let index = 0; // Puntero circular
 
-    while (terminadas.length < actividades.length) {
-        while (idxPendientes < pendientes.length && pendientes[idxPendientes].tiempo_llegada <= tiempoActual) {
-            cola.push(pendientes[idxPendientes]);
-            idxPendientes++;
+    while (completados < actividades.length) {
+        let cpuOciosa = true;
+
+        // Intentamos recorrer la lista una vez completa desde la posición actual
+        let inicioCiclo = index;
+        
+        for (let i = 0; i < actividades.length; i++) {
+            // Cálculo del índice circular
+            let actualIdx = (inicioCiclo + i) % actividades.length;
+            let act = actividades[actualIdx];
+
+            // Si el proceso apuntado ya llegó y no ha terminado
+            if (!act.terminado && act.tiempo_llegada <= tiempoActual) {
+                cpuOciosa = false;
+                
+                // Ejecutamos un Quantum o lo que reste
+                let tiempoEjecucion = Math.min(quantum, act.duracion_restante);
+                tiempoActual += tiempoEjecucion;
+                act.duracion_restante -= tiempoEjecucion;
+
+                if (act.duracion_restante === 0) {
+                    act.tiempo_final = tiempoActual;
+                    act.calcularMetricas();
+                    act.terminado = true;
+                    completados++;
+                }
+                
+                // IMPORTANTE: Movemos el puntero al siguiente para la próxima iteración
+                index = (actualIdx + 1) % actividades.length;
+                break; // Salimos del for para volver al while principal y re-evaluar
+            }
         }
 
-        if (!cola.length) {
-            if (idxPendientes < pendientes.length) {
-                tiempoActual = pendientes[idxPendientes].tiempo_llegada;
-            } else break;
-            continue;
-        }
-
-        const act = cola.shift();
-        const tiempoTurno = Math.min(quantum, act.duracion_restante);
-        tiempoActual += tiempoTurno;
-        act.duracion_restante -= tiempoTurno;
-
-        while (idxPendientes < pendientes.length && pendientes[idxPendientes].tiempo_llegada <= tiempoActual) {
-            cola.push(pendientes[idxPendientes]);
-            idxPendientes++;
-        }
-
-        if (act.duracion_restante === 0) {
-            act.tiempo_final = tiempoActual;
-            act.calcularMetricas();
-            terminadas.push(act);
-        } else {
-            cola.push(act);
+        if (cpuOciosa) {
+            tiempoActual++;
         }
     }
 
-    return imprimirResultados(terminadas, "Round Robin");
+    return imprimirResultados(actividades, "Round Robin");
 }
 
 // --- Comparación de resultados ---
@@ -216,8 +248,16 @@ function compararResultados(resFIFO, resLIFO, resRR) {
 
 // --- Función principal ---
 async function main() {
-    const actividades = await obtenerDatosDesdeArchivo();
+    // Creamos la interfaz UNA sola vez al inicio
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    
+    // Pasamos 'rl' a la función
+    const actividades = await obtenerDatosDesdeArchivo(rl); 
+    
+    if (!actividades) {
+        rl.close();
+        return;
+    }
 
     function pregunta(query) { return new Promise(resolve => rl.question(query, resolve)); }
 
@@ -227,7 +267,7 @@ async function main() {
         quantum = parseInt(entrada);
         if (isNaN(quantum) || quantum <= 0) console.log("Quantum inválido. Debe ser un número entero positivo.");
     }
-    rl.close();
+    rl.close(); // Cerramos aquí, al final de toda la entrada de datos
 
     console.log("\n" + "=".repeat(50));
     console.log("      INICIANDO SIMULACIONES      ");
